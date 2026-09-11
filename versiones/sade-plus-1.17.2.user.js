@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SADE+
 // @namespace    local
-// @version      1.17.3
+// @version      1.17.2
 // @description  Vista externa del Expediente Electrónico y de GEDO. Replica sus listados en una ventana propia, con texto completo, orden, búsqueda, etiquetas y anotaciones.
 // @match        https://eue-pr.apps.buenosaires.gob.ar/expedientes-web/*
 // @match        https://eut-pr.apps.buenosaires.gob.ar/gedo-web/*
@@ -124,7 +124,7 @@
 (function () {
     'use strict';
 
-    const VERSION = '1.17.3';
+    const VERSION = '1.17.2';
     const CLAVE = 'sade.plus.v1';
     const ENCARGO = 'sade.plus.abrir';   // encargo que se deja para la pestaña nueva
 
@@ -149,6 +149,7 @@
         pos: null,              // posición cuando no está maximizada
         tam: null,              // tamaño cuando no está maximizada
         enPestanaNueva: true,   // Abrir usa una pestaña aparte
+        filtro: '',             // búsqueda del listado (buzón o GEDO); se conserva entre recargas
         filtroEtiqueta: '',     // '' todas, '@sin', '@nota', o el id de una etiqueta
         cols: {}                // orden de las columnas, por pantalla: buzon, expediente, gedo
     };
@@ -177,19 +178,9 @@
         const g = leerLocal(CLAVE, CLAVE_VIEJA);
         const base = (g && typeof g === 'object') ? g : {};
         delete base.abierta;                    // no se hereda el estado cerrado
-        // La búsqueda ya no se guarda: sirve para encontrar algo en el
-        // momento y no tiene que reaparecer después. Se descarta la que
-        // hayan dejado guardada las versiones anteriores.
-        delete base.filtro;
         return Object.assign({}, CFG_DEF, base);
     })();
     const guardar = () => { try { localStorage.setItem(CLAVE, JSON.stringify(CFG)); } catch {} };
-    // Si quedó guardada una búsqueda de una versión anterior, se reescribe la
-    // configuración sin ella.
-    try {
-        const g = JSON.parse(localStorage.getItem(CLAVE) || 'null');
-        if (g && typeof g === 'object' && 'filtro' in g) guardar();
-    } catch {}
 
     // ===================== ETIQUETAS Y ANOTACIONES =====================
     //
@@ -840,11 +831,12 @@
         // tiempo. Manda la de documentos: en el buzón no existe, así que no
         // hay confusión posible.
         //
-        // La búsqueda se borra al pasar del buzón al expediente y al volver.
-        // Antes seguía puesta: lo que se escribía en el buzón para encontrar
-        // un expediente (por ejemplo, parte de su número) quedaba aplicado a
-        // la lista de documentos, que se reducía a los que contenían ese
-        // texto y no coincidía con la del sistema.
+        // Cada pantalla tiene su propia búsqueda. Antes era una sola, y la
+        // que se escribía en el buzón para encontrar un expediente (por
+        // ejemplo, parte de su número) seguía aplicada al abrirlo: la lista
+        // de documentos quedaba reducida a los que contenían ese texto y no
+        // coincidía con la del sistema. Ahora, al entrar a un expediente, la
+        // búsqueda empieza vacía, y al volver al buzón reaparece la suya.
         if (grillaDocs()) {
             if (MODO !== 'expediente') {
                 MODO = 'expediente'; docAbierto = null;
@@ -853,7 +845,7 @@
             return leerDocs();
         }
 
-        if (MODO === 'expediente') ponerBusqueda('');
+        if (MODO === 'expediente') ponerBusqueda(CFG.filtro || '');
 
         const G = grilla();
         docAbierto = null;
@@ -966,9 +958,10 @@
 
     // ===================== ABRIR UNA ACTUACIÓN =====================
     // Tramitar recarga la página, de modo que si se accionara en esta
-    // misma pestaña se perdería el listado y el orden. Para evitarlo se
-    // deja anotado un encargo y se abre una pestaña nueva: allí la
-    // herramienta lo levanta y acciona Tramitar sobre esa actuación.
+    // misma pestaña se perdería el listado junto con la búsqueda y el
+    // orden. Para evitarlo se deja anotado un encargo y se abre una
+    // pestaña nueva: allí la herramienta lo levanta y acciona Tramitar
+    // sobre esa actuación. Esta pestaña queda intacta.
 
     function avisar(txt, seg) {
         const av = win && win.querySelector('.sadeplus-aviso');
@@ -977,12 +970,7 @@
         if (seg) setTimeout(() => { av.style.display = 'none'; }, seg * 1000);
     }
 
-    // Abierta la actuación, la búsqueda que sirvió para encontrarla ya
-    // cumplió su función y se borra, también en esta pestaña. Se redibuja
-    // antes de avisar, porque el redibujado oculta el aviso.
     function abrirActuacion(clave) {
-        const borrarBusqueda = () => { ponerBusqueda(''); pagina = 1; pintar(); };
-
         if (CFG.enPestanaNueva) {
             try {
                 localStorage.setItem(ENCARGO, JSON.stringify({ clave, ts: Date.now() }));
@@ -990,8 +978,7 @@
 
             const nueva = window.open(location.origin + '/expedientes-web/', '_blank');
             if (nueva) {
-                borrarBusqueda();
-                avisar('Se abre ' + clave + ' en una pestaña nueva.', 6);
+                avisar('Se abre ' + clave + ' en una pestaña nueva. Este listado permanece sin cambios.', 6);
                 return;
             }
             // El navegador bloqueó la pestaña: se retira el encargo para
@@ -1000,7 +987,7 @@
         }
 
         const r = tramitar(clave);
-        if (r.ok) { borrarBusqueda(); win.classList.add('sadeplus-min'); plegado(true); }
+        if (r.ok) { win.classList.add('sadeplus-min'); plegado(true); }
         else avisar(r.msg);
     }
 
@@ -1730,9 +1717,8 @@
                     las etiquetas y las anotaciones.</li>
                 <li><b>Orden, búsqueda y paginación.</b> Por cualquier columna, sobre todos los
                     campos a la vez, incluidas las etiquetas y las anotaciones, y de cinco en cinco
-                    hasta cincuenta. La búsqueda no se guarda: se borra al abrir un expediente, al
-                    volver de él y al cerrar la ventana, así que nunca queda aplicada a otra
-                    pantalla.</li>
+                    hasta cincuenta. Cada pantalla tiene su propia búsqueda: la del buzón se
+                    conserva, y al abrir un expediente la de sus documentos empieza vacía.</li>
               </ul>
 
               <h3>Qué no hace</h3>
@@ -1757,10 +1743,10 @@
                  tocar nada. Esa comprobación importa porque en la solapa Consultas el mismo
                  desplegable ofrece <b>Adquirir</b>, que toma el expediente.</p>
               <p>Accionar Tramitar recarga la página, de modo que hacerlo en esta misma pestaña
-                 haría perder el listado y el orden. Por eso, con la opción <b>Abrir en pestaña
-                 nueva</b> activada, la actuación se abre en una pestaña aparte y ésta queda como
-                 estaba, salvo la búsqueda, que se borra. Si el navegador bloqueara la pestaña, se
-                 abre aquí y la ventana se pliega a su barra de título.</p>
+                 haría perder el listado junto con la búsqueda y el orden. Por eso, con la opción
+                 <b>Abrir en pestaña nueva</b> activada, la actuación se abre en una pestaña aparte
+                 y ésta queda intacta. Si el navegador bloqueara la pestaña, se abre aquí y la
+                 ventana se pliega a su barra de título.</p>
 
               <h3>La ventana</h3>
               <p>Se mueve tomándola de su barra de título y se redimensiona desde cualquier borde o
@@ -1858,8 +1844,9 @@
 
     let win = null, fondo = null, filtro = '', pagina = 1, fichaDe = null, docAbierto = null;
 
-    // Cambia la búsqueda en curso y el texto del campo. Se usa para borrarla
-    // al abrir un expediente, al volver de él y al cerrar la ventana.
+    // Cambia la búsqueda en curso y el texto del campo, sin guardarla. Se usa
+    // al pasar de una pantalla a otra. No toca la página del buzón: el
+    // expediente no la usa, así que al volver se sigue donde se estaba.
     function ponerBusqueda(texto) {
         filtro = texto || '';
         const inp = win && win.querySelector('.sadeplus-busca input');
@@ -2994,16 +2981,10 @@
     }
     function cerrar() {
         CFG.abierta = false; guardar();
-        // Con la ventana cerrada el expediente se puede abrir desde el propio
-        // sistema sin que la herramienta lo vea: la búsqueda se borra ya.
-        ponerBusqueda(''); pagina = 1;
         cerrarAcerca();
         if (fondo) fondo.style.display = 'none';
         if (win) win.style.display = 'none';
-        // El botón de la esquina está oculto por la hoja de estilos, así que
-        // hay que mostrarlo expresamente: dejar el estilo en blanco lo
-        // dejaba oculto y no había cómo volver a abrir la ventana.
-        const b = document.getElementById('sadeplus-abrir'); if (b) b.style.display = 'block';
+        const b = document.getElementById('sadeplus-abrir'); if (b) b.style.display = '';
     }
 
     function crear() {
@@ -3141,12 +3122,13 @@
 
         // búsqueda
         const inp = win.querySelector('.sadeplus-busca input');
-        // Empieza siempre vacía y no se guarda.
-        inp.value = '';
-        filtro = '';
+        inp.value = CFG.filtro || '';
+        filtro = inp.value;
         inp.addEventListener('input', () => {
             filtro = inp.value;
-            if (MODO !== 'expediente') pagina = 1;
+            // Lo que se busca dentro de un expediente vale para ese
+            // expediente: no se guarda ni reemplaza la búsqueda del buzón.
+            if (MODO !== 'expediente') { CFG.filtro = filtro; guardar(); pagina = 1; }
             panel('lista'); pintar();
         });
 
